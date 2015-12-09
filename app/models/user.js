@@ -1,9 +1,17 @@
-var mongoose = require('mongoose');
-var Schema = mongoose.Schema;
+var Sequelize = require('sequelize');
 
-// set up a mongoose model
-module.exports = mongoose.model('User', new Schema({ 
-	name: String, 
-	password: String, 
-	admin: Boolean 
-}));
+module.exports = function(sequelize, DataTypes) {
+  var User = sequelize.define('User', {
+    name: DataTypes.STRING,
+    email: DataTypes.STRING,
+    encrypted_password: DataTypes.STRING,
+    mobile: DataTypes.STRING,
+    age: DataTypes.STRING,
+    gender: DataTypes.STRING,
+    otp: DataTypes.STRING,
+    otp_verified: DataTypes.BOOLEAN,
+    email_verified: DataTypes.BOOLEAN
+  });
+
+  return User;
+};

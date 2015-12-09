@@ -5,7 +5,11 @@
     "jsonwebtoken": "~1.1.2",
     "express": "~4.9.8",
     "body-parser": "~1.9.2",
-    "mongoose": "~3.8.19",
-    "morgan": "~1.5.0"
+    "mysql": "~2.9.0",
+    "sequelize": "~3.13.0",
+    "morgan": "~1.5.0",
+    "lodash": "~3.10.1",
+    "speakeasy": "~1.0.3",
+    "bcrypt-nodejs": "~0.0.3"
   }
 }

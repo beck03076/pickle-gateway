@@ -5,18 +5,38 @@ var express 	= require('express');
 var app         = express();
 var bodyParser  = require('body-parser');
 var morgan      = require('morgan');
-var mongoose    = require('mongoose');
-
-var jwt    = require('jsonwebtoken'); // used to create, sign, and verify tokens
+var Sequelize = require("sequelize");
 var config = require('./config'); // get our config file
-var User   = require('./app/models/user'); // get our mongoose model
+var db = require('./app/models');
+var jwt    = require('jsonwebtoken'); // used to create, sign, and verify tokens
+var fs        = require("fs");
+var path      = require("path");
+var env       = process.env.NODE_ENV || "development";
+var bcrypt = require('bcrypt-nodejs');
+var speakeasy = require('speakeasy');
+var bodyParser = require('body-parser')
+app.use( bodyParser.json() );       // to support JSON-encoded bodies
+app.use(bodyParser.urlencoded({     // to support URL-encoded bodies
+    extended: true
+}));
+
+app.set('superSecret', config.secret); // secret variable
+
+// dynamically include routes (Controller)
+fs.readdirSync('./app/controllers').forEach(function (file) {
+  if(file.substr(-3) == '.js') {
+    route = require('./app/controllers/' + file);
+    route.controller(app);
+  }
+});
+
+// attaching models to the application
+app.set('models', require('./app/models'));
 
 // =================================================================
 // configuration ===================================================
 // =================================================================
 var port = process.env.PORT || 8080; // used to create, sign, and verify tokens
-mongoose.connect(config.database); // connect to database
-app.set('superSecret', config.secret); // secret variable
 
 // use body parser so we can get info from POST and/or URL parameters
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -28,125 +48,103 @@ app.use(morgan('dev'));
 // =================================================================
 // routes ==========================================================
 // =================================================================
-app.get('/setup', function(req, res) {
+app.post('/_unsecured/register_user', function(req, res) {
 
-	// create a sample user
-	var nick = new User({ 
-		name: 'Nick Cerminara', 
-		password: 'password',
-		admin: true 
-	});
-	nick.save(function(err) {
-		if (err) throw err;
-
-		console.log('User saved successfully');
-		res.json({ success: true });
-	});
+  var salt = bcrypt.genSaltSync(10);
+  var hash = bcrypt.hashSync(req.body.password, salt);
+  db.User
+  .build({ name: req.body.name,
+         mobile: req.body.mobile,
+         email: req.body.email,
+         encrypted_password: hash,
+         age: req.body.age,
+         gender: req.body.gender}).save()
+         .then(function(user) {
+           if (!user) {
+             res.json({ success: false, message: 'Could not register user.' });
+           } else if (user) {
+             var otp = speakeasy.hotp({key: user.id, counter: 582, length: 4});
+             console.log(otp);
+             user.otp = otp;
+             user.save().then(function(){});
+             res.json({
+               success: true,
+               message: 'User registered successfully!',
+               user_id: user.id,
+               timed_message: "Until you configure a SMS service, I will return the OTP here and be vulnerable",
+               otp: user.otp
+             });
+           }
+         }).catch(function(error) {
+           res.json(error.errors);
+         });
 });
 
-// basic route (http://localhost:8080)
-app.get('/', function(req, res) {
-	res.send('Hello! The API is at http://localhost:' + port + '/api');
+app.post('/_unsecured/verify_otp', function(req, res) {
+  db.User
+  .findOne({where: { id: req.body.user_id
+  }}).then(function(user) {
+    if (!user) {
+      res.json({ success: false, message: 'Could not find this user.' });
+    } else if (req.body.otp != user.otp){
+      res.json({
+        success: false,
+        message: 'OTP Mismatch!',
+      });
+    }else if (req.body.otp == user.otp){
+      user.otp_verified = 1;
+      user.save();
+      var token = jwt.sign(user, app.get('superSecret'), {
+        expiresInMinutes: 1440 // expires in 24 hours
+      });
+      res.json({
+        success: true,
+        message: 'Enjoy your token!',
+        token: token
+      });
+    }
+  }).catch(function(error) {
+    res.json(error.errors);
+  });
 });
 
-// ---------------------------------------------------------
-// get an instance of the router for api routes
-// ---------------------------------------------------------
-var apiRoutes = express.Router(); 
+app.post('/_unsecured/login_user', function(req, res) {
 
-// ---------------------------------------------------------
-// authentication (no middleware necessary since this isnt authenticated)
-// ---------------------------------------------------------
-// http://localhost:8080/api/authenticate
-apiRoutes.post('/authenticate', function(req, res) {
+  console.log(req.body);
+  // find the user
+  db.User.findOne({
+    where: Sequelize.or(
+      { email: req.body.email},
+      {mobile: req.body.mobile})
+  }).then(function(user) {
 
-	// find the user
-	User.findOne({
-		name: req.body.name
-	}, function(err, user) {
+    console.log(user);
+    if (!user) {
+      res.json({ success: false, message: 'Authentication failed. User not found.' });
+    } else if(user.otp_verified != 1){
+      res.json({ success: false, message: 'User OTP Not Verified!' });
+    }
+    else if (user) {
+      // check if password matches
+      if (bcrypt.compareSync(req.body.password, user.encrypted_password)) {
+        // if user is found and password is right
+        // create a token
+        var token = jwt.sign(user, app.get('superSecret'), {
+          expiresInMinutes: 1440 // expires in 24 hours
+        });
 
-		if (err) throw err;
-
-		if (!user) {
-			res.json({ success: false, message: 'Authentication failed. User not found.' });
-		} else if (user) {
-
-			// check if password matches
-			if (user.password != req.body.password) {
-				res.json({ success: false, message: 'Authentication failed. Wrong password.' });
-			} else {
-
-				// if user is found and password is right
-				// create a token
-				var token = jwt.sign(user, app.get('superSecret'), {
-					expiresInMinutes: 1440 // expires in 24 hours
-				});
-
-				res.json({
-					success: true,
-					message: 'Enjoy your token!',
-					token: token
-				});
-			}		
-
-		}
-
-	});
+        res.json({
+          success: true,
+          message: 'Enjoy your token!',
+          token: token
+        });
+      }else
+        {
+          res.json({ success: false, message: 'Authentication failed. Wrong password.' });
+        }
+    }
+  });
 });
-
-// ---------------------------------------------------------
-// route middleware to authenticate and check token
-// ---------------------------------------------------------
-apiRoutes.use(function(req, res, next) {
-
-	// check header or url parameters or post parameters for token
-	var token = req.body.token || req.param('token') || req.headers['x-access-token'];
-
-	// decode token
-	if (token) {
-
-		// verifies secret and checks exp
-		jwt.verify(token, app.get('superSecret'), function(err, decoded) {			
-			if (err) {
-				return res.json({ success: false, message: 'Failed to authenticate token.' });		
-			} else {
-				// if everything is good, save to request for use in other routes
-				req.decoded = decoded;	
-				next();
-			}
-		});
-
-	} else {
-
-		// if there is no token
-		// return an error
-		return res.status(403).send({ 
-			success: false, 
-			message: 'No token provided.'
-		});
-		
-	}
-	
-});
-
-// ---------------------------------------------------------
-// authenticated routes
-// ---------------------------------------------------------
-apiRoutes.get('/', function(req, res) {
-	res.json({ message: 'Welcome to the coolest API on earth!' });
-});
-
-apiRoutes.get('/users', function(req, res) {
-	User.find({}, function(err, users) {
-		res.json(users);
-	});
-});
-
-apiRoutes.get('/check', function(req, res) {
-	res.json(req.decoded);
-});
-
-app.use('/api', apiRoutes);
 
 // =================================================================
 // start the server ================================================
